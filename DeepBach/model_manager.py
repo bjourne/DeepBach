@@ -3,15 +3,33 @@
 """
 
 from DatasetManager.metadata import FermataMetadata
-import numpy as np
-import torch
+from DatasetManager.helpers import END_SYMBOL, START_SYMBOL
 from DeepBach.helpers import cuda_variable, to_numpy
-
+from DeepBach.voice_model import VoiceModel
 from torch import optim, nn
 from tqdm import tqdm
+import numpy as np
+import torch
 
-from DeepBach.voice_model import VoiceModel
 
+# What does these constants do?
+SEQUENCES_SIZE = 8
+
+# Number of sixteenth notes per beat
+SUBDIVISION = 4
+
+# Number of parallel gibbs updates
+BATCH_SIZE = 8
+
+# timesteps_ticks is the number of ticks on which we unroll
+# the LSTMs it is also the padding size
+TIMESTEP_TICKS = SEQUENCES_SIZE * SUBDIVISION // 2
+
+def random_chorale(length, n_tokens_per_voice):
+    tensor = np.array(
+        [np.random.randint(n_tokens, size = length)
+         for n_tokens in n_tokens_per_voice])
+    return torch.from_numpy(tensor).long().clone()
 
 class DeepBach:
     def __init__(self,
@@ -21,25 +39,22 @@ class DeepBach:
                  num_layers,
                  lstm_hidden_size,
                  dropout_lstm,
-                 linear_hidden_size,
-                 ):
+                 linear_hidden_size):
         self.dataset = dataset
         self.num_voices = self.dataset.num_voices
         self.num_metas = len(self.dataset.metadatas) + 1
         self.activate_cuda = torch.cuda.is_available()
 
         self.voice_models = [VoiceModel(
-            dataset=self.dataset,
-            main_voice_index=main_voice_index,
-            note_embedding_dim=note_embedding_dim,
-            meta_embedding_dim=meta_embedding_dim,
-            num_layers=num_layers,
-            lstm_hidden_size=lstm_hidden_size,
-            dropout_lstm=dropout_lstm,
-            hidden_size_linear=linear_hidden_size,
-        )
-            for main_voice_index in range(self.num_voices)
-        ]
+            self.dataset,
+            main_voice_index,
+            note_embedding_dim,
+            meta_embedding_dim,
+            num_layers,
+            lstm_hidden_size,
+            dropout_lstm,
+            linear_hidden_size)
+            for main_voice_index in range(4)]
 
     def cuda(self, main_voice_index=None):
         if self.activate_cuda:
@@ -84,155 +99,128 @@ class DeepBach:
         for voice_model in self.voice_models:
             voice_model.train()
 
-    def generation(self,
-                   temperature=1.0,
-                   batch_size_per_voice=8,
+    def generation(self, temperature=1.0,
                    num_iterations=None,
-                   sequence_length_ticks=160,
-                   tensor_chorale=None,
-                   tensor_metadata=None,
-                   time_index_range_ticks=None,
-                   voice_index_range=None,
-                   fermatas=None,
-                   random_init=True
-                   ):
+                   length=160,
+                   fermatas=None):
         """
 
         :param temperature:
         :param batch_size_per_voice:
         :param num_iterations:
-        :param sequence_length_ticks:
         :param tensor_chorale:
         :param tensor_metadata:
-        :param time_index_range_ticks: list of two integers [a, b] or None; can be used \
-        to regenerate only the portion of the score between timesteps a and b
-        :param voice_index_range: list of two integers [a, b] or None; can be used \
-        to regenerate only the portion of the score between voice_index a and b
         :param fermatas: list[Fermata]
-        :param random_init: boolean, whether or not to randomly initialize
         the portion of the score on which we apply the pseudo-Gibbs algorithm
         :return: tuple (
-        generated_score [music21 Stream object],
-        tensor_chorale (num_voices, chorale_length) torch.IntTensor,
-        tensor_metadata (num_voices, chorale_length, num_metadata) torch.IntTensor
+            generated_score,
+            tensor_chorale (num_voices, chorale_length),
+            tensor_metadata (num_voices, chorale_length, num_metadata)
         )
         """
         self.eval_phase()
 
-        # --Process arguments
-        # initialize generated chorale
-        # tensor_chorale = self.dataset.empty_chorale(sequence_length_ticks)
-        if tensor_chorale is None:
-            tensor_chorale = self.dataset.random_score_tensor(
-                sequence_length_ticks)
-        else:
-            sequence_length_ticks = tensor_chorale.size(1)
+        n_tokens_per_voice = [len(n2i)
+                              for n2i in self.dataset.note2index_dicts]
+
+        tensor_chorale = random_chorale(length, n_tokens_per_voice)
 
         # initialize metadata
-        if tensor_metadata is None:
-            test_chorale = next(self.dataset.corpus_it_gen().__iter__())
-            tensor_metadata = self.dataset.get_metadata_tensor(test_chorale)
+        it = self.dataset.corpus_it_gen().__iter__()
+        test_chorale = next(it)
+        test_chorale = next(it)
+        test_chorale = next(it)
+        test_chorale = next(it)
+        test_chorale = next(it)
 
-            # todo do not work if metadata_length_ticks > sequence_length_ticks
-            tensor_metadata = tensor_metadata[:, :sequence_length_ticks, :]
-        else:
-            tensor_metadata_length = tensor_metadata.size(1)
-            assert tensor_metadata_length == sequence_length_ticks
+        md = []
+        for metadata in self.dataset.metadatas:
+            a = metadata.evaluate(test_chorale, SUBDIVISION)
+            seq_metadata = torch.from_numpy(a).long().clone()
+            square_metadata = seq_metadata.repeat(4, 1)
+            md.append(square_metadata[:, :, None])
+        chorale_length = int(test_chorale.duration.quarterLength \
+                             * SUBDIVISION)
+        voice_id_metada = torch.from_numpy(np.arange(4)).long().clone()
+        square_metadata = torch.transpose(
+            voice_id_metada.repeat(chorale_length, 1), 0, 1)
+        md.append(square_metadata[:, :, None])
+        tensor_metadata = torch.cat(md, 2)
+
+        # todo do not work if metadata_length_ticks > sequence_length_ticks
+        tensor_metadata = tensor_metadata[:, :length, :]
 
         if fermatas is not None:
             tensor_metadata = self.dataset.set_fermatas(tensor_metadata,
                                                         fermatas)
 
-        # timesteps_ticks is the number of ticks on which we unroll the LSTMs
-        # it is also the padding size
-        timesteps_ticks = self.dataset.sequences_size * self.dataset.subdivision // 2
-        if time_index_range_ticks is None:
-            time_index_range_ticks = [timesteps_ticks, sequence_length_ticks + timesteps_ticks]
-        else:
-            a_ticks, b_ticks = time_index_range_ticks
-            assert 0 <= a_ticks < b_ticks <= sequence_length_ticks
-            time_index_range_ticks = [a_ticks + timesteps_ticks, b_ticks + timesteps_ticks]
+        # Pad left and right
+        left = np.array([n2i[START_SYMBOL]
+                         for n2i in self.dataset.note2index_dicts])
+        left = torch.from_numpy(left).long().clone()
+        left = left.repeat(TIMESTEP_TICKS, 1).transpose(0, 1)
 
-        if voice_index_range is None:
-            voice_index_range = [0, self.dataset.num_voices]
+        right = np.array([n2i[END_SYMBOL]
+                          for n2i in self.dataset.note2index_dicts])
+        right = torch.from_numpy(right).long().clone()
+        right = right.repeat(TIMESTEP_TICKS, 1).transpose(0, 1)
+        tensor_chorale = torch.cat([left, tensor_chorale, right], 1)
 
-        tensor_chorale = self.dataset.extract_score_tensor_with_padding(
-            tensor_score=tensor_chorale,
-            start_tick=-timesteps_ticks,
-            end_tick=sequence_length_ticks + timesteps_ticks
-        )
+        n_metadata = tensor_metadata.shape[2]
 
-        tensor_metadata_padded = self.dataset.extract_metadata_with_padding(
-            tensor_metadata=tensor_metadata,
-            start_tick=-timesteps_ticks,
-            end_tick=sequence_length_ticks + timesteps_ticks
-        )
+        left = np.zeros((4, TIMESTEP_TICKS, n_metadata))
+        left = torch.from_numpy(left).long().clone()
 
-        # randomize regenerated part
-        if random_init:
-            a, b = time_index_range_ticks
-            tensor_chorale[voice_index_range[0]:voice_index_range[1], a:b] = self.dataset.random_score_tensor(
-                b - a)[voice_index_range[0]:voice_index_range[1], :]
+        right = np.zeros((4, TIMESTEP_TICKS, n_metadata))
+        right = torch.from_numpy(right).long().clone()
+
+        tensor_metadata_padded = torch.cat([left, tensor_metadata, right],
+                                           1)
 
         tensor_chorale = self.parallel_gibbs(
-            tensor_chorale=tensor_chorale,
-            tensor_metadata=tensor_metadata_padded,
+            tensor_chorale,
+            tensor_metadata_padded,
             num_iterations=num_iterations,
-            timesteps_ticks=timesteps_ticks,
-            temperature=temperature,
-            batch_size_per_voice=batch_size_per_voice,
-            time_index_range_ticks=time_index_range_ticks,
-            voice_index_range=voice_index_range,
-        )
+            temperature=temperature)
 
         # get fermata tensor
         for metadata_index, metadata in enumerate(self.dataset.metadatas):
             if isinstance(metadata, FermataMetadata):
                 break
 
-
+        print('solved tensor', tensor_chorale)
         score = self.dataset.tensor_to_score(
             tensor_score=tensor_chorale,
             fermata_tensor=tensor_metadata[:, :, metadata_index])
 
         return score, tensor_chorale, tensor_metadata
 
-    def parallel_gibbs(self,
-                       tensor_chorale,
-                       tensor_metadata,
-                       timesteps_ticks,
-                       num_iterations=1000,
-                       batch_size_per_voice=16,
-                       temperature=1.,
-                       time_index_range_ticks=None,
-                       voice_index_range=None,
-                       ):
+    def parallel_gibbs(self, chorale, metadata,
+                       num_iterations=1000, temperature=1.):
         """
         Parallel pseudo-Gibbs sampling
-        tensor_chorale and tensor_metadata are padded with
+        chorale and metadata are padded with
         timesteps_ticks START_SYMBOLS before,
         timesteps_ticks END_SYMBOLS after
-        :param tensor_chorale: (num_voices, chorale_length) tensor
-        :param tensor_metadata: (num_voices, chorale_length) tensor
-        :param timesteps_ticks:
+
+        :param chorale: (num_voices, chorale_length) tensor
+        :param metadata: (num_voices, chorale_length) tensor
         :param num_iterations: number of Gibbs sampling iterations
-        :param batch_size_per_voice: number of simultaneous parallel updates
         :param temperature: final temperature after simulated annealing
-        :param time_index_range_ticks: list of two integers [a, b] or None; can be used \
-        to regenerate only the portion of the score between timesteps a and b
-        :param voice_index_range: list of two integers [a, b] or None; can be used \
-        to regenerate only the portion of the score between voice_index a and b
         :return: (num_voices, chorale_length) tensor
         """
-        start_voice, end_voice = voice_index_range
+
+        time_index_range_ticks = [TIMESTEP_TICKS,
+                                  chorale.shape[1] - TIMESTEP_TICKS]
+
         # add batch_dimension
-        tensor_chorale = tensor_chorale.unsqueeze(0)
-        tensor_chorale_no_cuda = tensor_chorale.clone()
-        tensor_metadata = tensor_metadata.unsqueeze(0)
+        chorale = chorale.unsqueeze(0)
+        chorale_no_cuda = chorale.clone()
+        metadata = metadata.unsqueeze(0)
 
         # to variable
-        tensor_chorale = cuda_variable(tensor_chorale, volatile=True)
-        tensor_metadata = cuda_variable(tensor_metadata, volatile=True)
+        chorale = cuda_variable(chorale)
+        metadata = cuda_variable(metadata)
 
         min_temperature = temperature
         temperature = 1.1
@@ -242,60 +230,50 @@ class DeepBach:
             # annealing
             temperature = max(min_temperature, temperature * 0.9993)
             # print(temperature)
-            time_indexes_ticks = {}
+            ticks_per_row = np.zeros((4, BATCH_SIZE), dtype = np.int)
             probas = {}
 
-            for voice_index in range(start_voice, end_voice):
+            for row in range(4):
                 batch_notes = []
                 batch_metas = []
 
-                time_indexes_ticks[voice_index] = []
+                #ticks_per_row[row] = []
+                voice_model = self.voice_models[row]
 
                 # create batches of inputs
-                for batch_index in range(batch_size_per_voice):
-                    time_index_ticks = np.random.randint(
-                        *time_index_range_ticks)
-                    time_indexes_ticks[voice_index].append(time_index_ticks)
-
-                    notes, label = (self.voice_models[voice_index]
-                                    .preprocess_notes(
-                            tensor_chorale=tensor_chorale[
-                                           :, :,
-                                           time_index_ticks - timesteps_ticks:
-                                           time_index_ticks + timesteps_ticks],
-                            time_index_ticks=timesteps_ticks
-                        )
-                    )
-                    metas = self.voice_models[voice_index].preprocess_metas(
-                        tensor_metadata=tensor_metadata[
-                                        :, :,
-                                        time_index_ticks - timesteps_ticks:
-                                        time_index_ticks + timesteps_ticks,
-                                        :],
-                        time_index_ticks=timesteps_ticks
-                    )
+                for col in range(BATCH_SIZE):
+                    tick = np.random.randint(*time_index_range_ticks)
+                    ticks_per_row[row, col] = tick
+                    c1 = tick - TIMESTEP_TICKS
+                    c2 = tick + TIMESTEP_TICKS
+                    chorale_slice = chorale[:, :, c1:c2]
+                    notes, _ = voice_model.preprocess_notes(
+                        chorale_slice,
+                        TIMESTEP_TICKS)
+                    metadata_slice = metadata[:, :, c1:c2, :]
+                    metas = voice_model.preprocess_metas(metadata_slice,
+                                                         TIMESTEP_TICKS)
 
                     batch_notes.append(notes)
                     batch_metas.append(metas)
 
                 # reshape batches
                 batch_notes = list(map(list, zip(*batch_notes)))
-                batch_notes = [torch.cat(lcr) if lcr[0] is not None else None
+                batch_notes = [torch.cat(lcr) if lcr[0] is not None
+                               else None
                                for lcr in batch_notes]
                 batch_metas = list(map(list, zip(*batch_metas)))
-                batch_metas = [torch.cat(lcr)
-                               for lcr in batch_metas]
+                batch_metas = [torch.cat(lcr) for lcr in batch_metas]
 
                 # make all estimations
-                probas[voice_index] = (self.voice_models[voice_index]
-                                       .forward(batch_notes, batch_metas)
-                                       )
-                probas[voice_index] = nn.Softmax(dim=1)(probas[voice_index])
+                probas[row] = voice_model.forward(batch_notes,
+                                                  batch_metas)
+                probas[row] = nn.Softmax(dim=1)(probas[row])
 
             # update all predictions
-            for voice_index in range(start_voice, end_voice):
-                for batch_index in range(batch_size_per_voice):
-                    probas_pitch = probas[voice_index][batch_index]
+            for row in range(4):
+                for batch_index in range(BATCH_SIZE):
+                    probas_pitch = probas[row][batch_index]
 
                     probas_pitch = to_numpy(probas_pitch)
 
@@ -309,14 +287,11 @@ class DeepBach:
 
                     # pitch can include slur_symbol
                     pitch = np.argmax(np.random.multinomial(1, probas_pitch))
+                    col = ticks_per_row[row, batch_index]
+                    chorale_no_cuda[0, row, col] = int(pitch)
 
-                    tensor_chorale_no_cuda[
-                        0,
-                        voice_index,
-                        time_indexes_ticks[voice_index][batch_index]
-                    ] = int(pitch)
+            chorale = cuda_variable(chorale_no_cuda.clone())
+            if iteration % 50 == 0:
+                print(chorale_no_cuda[0, :, TIMESTEP_TICKS:-TIMESTEP_TICKS])
 
-            tensor_chorale = cuda_variable(tensor_chorale_no_cuda.clone(),
-                                           volatile=True)
-
-        return tensor_chorale_no_cuda[0, :, timesteps_ticks:-timesteps_ticks]
+        return chorale_no_cuda[0, :, TIMESTEP_TICKS:-TIMESTEP_TICKS]

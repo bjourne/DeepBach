@@ -38,82 +38,14 @@ class MusicDataset(ABC):
                  as a tensor
         """
         pass
-    
-    @abstractmethod
-    def get_metadata_tensor(self, score):
-        """
-
-        :param score: music21 score object
-        :return: torch tensor, with the metadata representation
-                 as a tensor
-        """
-        pass
 
     @abstractmethod
     def transposed_score_and_metadata_tensors(self, score, semi_tone):
         """
 
         :param score: music21 score object
-        :param semi-tone: int, +12 to -12, semitones to transpose 
+        :param semi-tone: int, +12 to -12, semitones to transpose
         :return: Transposed score shifted by the semi-tone
-        """
-        pass
-
-    @abstractmethod
-    def extract_score_tensor_with_padding(self, 
-                                          tensor_score, 
-                                          start_tick, 
-                                          end_tick):
-        """
-
-        :param tensor_score: torch tensor containing the score representation
-        :param start_tick:
-        :param end_tick:
-        :return: tensor_score[:, start_tick: end_tick]
-        with padding if necessary
-        i.e. if start_tick < 0 or end_tick > tensor_score length
-        """
-        pass
-
-    @abstractmethod
-    def extract_metadata_with_padding(self, 
-                                      tensor_metadata,
-                                      start_tick, 
-                                      end_tick):
-        """
-
-        :param tensor_metadata: torch tensor containing metadata
-        :param start_tick:
-        :param end_tick:
-        :return:
-        """
-        pass
-
-    @abstractmethod
-    def empty_score_tensor(self, score_length):
-        """
-        
-        :param score_length: int, length of the score in ticks
-        :return: torch long tensor, initialized with start indices 
-        """
-        pass 
-
-    @abstractmethod
-    def random_score_tensor(self, score_length):
-        """
-
-        :param score_length: int, length of the score in ticks
-        :return: torch long tensor, initialized with random indices
-        """
-        pass
-
-    @abstractmethod
-    def tensor_to_score(self, tensor_score):
-        """
-
-        :param tensor_score: torch tensor, tensor representation
-                             of the score
-        :return: music21 score object
         """
         pass
 

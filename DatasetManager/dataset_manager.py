@@ -16,15 +16,15 @@ from DatasetManager.music_dataset import MusicDataset
 
 all_datasets = {
     'bach_chorales':
-        {
-            'dataset_class_name': ChoraleDataset,
-            'corpus_it_gen':      music21.corpus.chorales.Iterator
-        },
+    {
+        'dataset_class_name': ChoraleDataset,
+        'corpus_it_gen':      music21.corpus.chorales.Iterator
+    },
     'bach_chorales_test':
-        {
-            'dataset_class_name': ChoraleDataset,
-            'corpus_it_gen':      ShortChoraleIteratorGen()
-        },
+    {
+        'dataset_class_name': ChoraleDataset,
+        'corpus_it_gen':      ShortChoraleIteratorGen()
+    },
 }
 
 
@@ -103,7 +103,7 @@ if __name__ == '__main__':
         KeyMetadata()
     ]
 
-    bach_chorales_dataset: ChoraleDataset = dataset_manager.get_dataset(
+    bach_chorales_dataset = dataset_manager.get_dataset(
         name='bach_chorales_test',
         voice_ids=[0, 1, 2, 3],
         metadatas=metadatas,

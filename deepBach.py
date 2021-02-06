@@ -44,8 +44,7 @@ def main(note_embedding_dim,
          num_epochs,
          train,
          num_iterations,
-         sequence_length_ticks,
-         ):
+         sequence_length_ticks):
     dataset_manager = DatasetManager()
 
     metadatas = [
@@ -59,7 +58,7 @@ def main(note_embedding_dim,
         'sequences_size': 8,
         'subdivision':    4
     }
-    bach_chorales_dataset: ChoraleDataset = dataset_manager.get_dataset(
+    bach_chorales_dataset = dataset_manager.get_dataset(
         name='bach_chorales',
         **chorale_dataset_kwargs
         )
@@ -85,10 +84,11 @@ def main(note_embedding_dim,
     print('Generation')
     score, tensor_chorale, tensor_metadata = deepbach.generation(
         num_iterations=num_iterations,
-        sequence_length_ticks=sequence_length_ticks,
+        length=sequence_length_ticks,
     )
-    score.show('txt')
-    score.show()
+    score.write('midi', fp = 'test.mid')
+    # score.show('txt')
+    # score.show()
 
 
 if __name__ == '__main__':

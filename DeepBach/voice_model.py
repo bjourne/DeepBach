@@ -15,13 +15,13 @@ from DeepBach.data_utils import reverse_tensor, mask_entry
 
 class VoiceModel(nn.Module):
     def __init__(self,
-                 dataset: ChoraleDataset,
-                 main_voice_index: int,
-                 note_embedding_dim: int,
-                 meta_embedding_dim: int,
-                 num_layers: int,
-                 lstm_hidden_size: int,
-                 dropout_lstm: float,
+                 dataset,
+                 main_voice_index,
+                 note_embedding_dim,
+                 meta_embedding_dim,
+                 num_layers,
+                 lstm_hidden_size,
+                 dropout_lstm,
                  hidden_size_linear=200
                  ):
         super(VoiceModel, self).__init__()
@@ -84,8 +84,7 @@ class VoiceModel(nn.Module):
             nn.Linear(hidden_size_linear, self.num_notes_per_voice[main_voice_index])
         )
 
-    def forward(self, *input):
-        notes, metas = input
+    def forward(self, notes, metas):
         batch_size, num_voices, timesteps_ticks = notes[0].size()
 
         # put time first
@@ -329,17 +328,17 @@ class VoiceModel(nn.Module):
         label = tensor_chorale[:, self.main_voice_index, time_index_ticks]
         return (left_notes, central_notes, right_notes), label
 
-    def preprocess_metas(self, tensor_metadata, time_index_ticks):
+    def preprocess_metas(self, metadata, time_index_ticks):
         """
 
-        :param tensor_metadata: (batch_size, num_voices, chorale_length_ticks)
+        :param metadata: (batch_size, num_voices, chorale_length_ticks)
         :param time_index_ticks:
         :return:
         """
 
-        left_metas = tensor_metadata[:, self.main_voice_index, :time_index_ticks, :]
+        left_metas = metadata[:, self.main_voice_index, :time_index_ticks, :]
         right_metas = reverse_tensor(
-            tensor_metadata[:, self.main_voice_index, time_index_ticks + 1:, :],
+            metadata[:, self.main_voice_index, time_index_ticks + 1:, :],
             dim=1)
-        central_metas = tensor_metadata[:, self.main_voice_index, time_index_ticks, :]
+        central_metas = metadata[:, self.main_voice_index, time_index_ticks, :]
         return left_metas, central_metas, right_metas
